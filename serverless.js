@@ -40,7 +40,7 @@ class Domain extends Component {
     // On domain change, call remove for all previous state.
 
     // Get AWS SDK Clients
-    const clients = getClients(this.context.credentials.aws)
+    const clients = getClients(this.context.credentials.aws, inputs.region)
 
     this.context.debug(`Formatting domains and identifying cloud services being used.`)
     const subdomains = prepareSubdomains(inputs)
