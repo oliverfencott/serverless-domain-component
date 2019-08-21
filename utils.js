@@ -61,6 +61,12 @@ const prepareSubdomains = (inputs) => {
       domainObj.type = 'awsApiGateway'
     }
 
+    if (inputs.subdomains[subdomain].url.includes('cloudfront')) {
+      domainObj.distributionId = inputs.subdomains[subdomain].id
+      domainObj.url = inputs.subdomains[subdomain].url
+      domainObj.type = 'awsCloudFront'
+    }
+
     subdomains.push(domainObj)
   }
 
@@ -671,7 +677,7 @@ const invalidateCloudfrontDistribution = async (cf, distributionId) => {
  * Remove AWS S3 Website DNS Records
  */
 
-const removeWebsiteDomainDnsRecords = async (
+const removeCloudFrontDomainDnsRecords = async (
   route53,
   domain,
   domainHostedZoneId,
@@ -765,6 +771,94 @@ const getApiDomainName = async (apig, domain) => {
   }
 }
 
+// const getCloudFrontDistributionByUrl = async (cf, distributionUrl) => {
+//   const listRes = await cf.listDistributions({}).promise()
+
+//   const distribution = listRes.DistributionList.Items.find(
+//     (dist) => dist.DomainName === distributionUrl
+//   )
+
+//   if (distribution) {
+//     return {
+//       arn: distribution.ARN,
+//       id: distribution.Id,
+//       url: distribution.DomainName,
+//       origins: distribution.Origins.Items.map((origin) => origin.DomainName),
+//       errorPages: distribution.CustomErrorResponses.Quantity === 2 ? true : false
+//     }
+//   }
+
+//   return null
+// }
+
+const addDomainToCloudfrontDistribution = async (cf, subdomain, certificateArn) => {
+  // Update logic is a bit weird...
+  // https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/CloudFront.html#updateDistribution-property
+
+  // 1. we gotta get the config first...
+  const params = await cf.getDistributionConfig({ Id: subdomain.distributionId }).promise()
+
+  // 2. then add this property
+  params.IfMatch = params.ETag
+
+  // 3. then delete this property
+  delete params.ETag
+
+  // 4. then set this property
+  params.Id = subdomain.distributionId
+
+  // 5. then make our changes
+  params.DistributionConfig.Aliases = {
+    Quantity: 1,
+    Items: [subdomain.domain]
+  }
+
+  params.DistributionConfig.ViewerCertificate = {
+    ACMCertificateArn: certificateArn,
+    SSLSupportMethod: 'sni-only',
+    MinimumProtocolVersion: 'TLSv1.1_2016',
+    Certificate: certificateArn,
+    CertificateSource: 'acm'
+  }
+
+  // 6. then finally update!
+  const res = await cf.updateDistribution(params).promise()
+
+  return {
+    id: res.Distribution.Id,
+    arn: res.Distribution.ARN,
+    url: res.Distribution.DomainName
+  }
+}
+
+const removeDomainFromCloudFrontDistribution = async (cf, subdomain) => {
+  const params = await cf.getDistributionConfig({ Id: subdomain.distributionId }).promise()
+
+  params.IfMatch = params.ETag
+
+  delete params.ETag
+
+  params.Id = subdomain.distributionId
+
+  params.DistributionConfig.Aliases = {
+    Quantity: 0,
+    Items: []
+  }
+
+  params.DistributionConfig.ViewerCertificate = {
+    SSLSupportMethod: 'sni-only',
+    MinimumProtocolVersion: 'TLSv1.1_2016'
+  }
+
+  const res = await cf.updateDistribution(params).promise()
+
+  return {
+    id: res.Distribution.Id,
+    arn: res.Distribution.ARN,
+    url: res.Distribution.DomainName
+  }
+}
+
 /**
  * Exports
  */
@@ -790,5 +884,7 @@ module.exports = {
   getCloudFrontDistributionByDomain,
   configureDnsForCloudFrontDistribution,
   getApiDomainName,
-  removeWebsiteDomainDnsRecords
+  removeCloudFrontDomainDnsRecords,
+  addDomainToCloudfrontDistribution,
+  removeDomainFromCloudFrontDistribution
 }

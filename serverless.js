@@ -16,7 +16,9 @@ const {
   removeApiDomainDnsRecords,
   configureDnsForCloudFrontDistribution,
   getApiDomainName,
-  removeWebsiteDomainDnsRecords
+  removeCloudFrontDomainDnsRecords,
+  addDomainToCloudfrontDistribution,
+  removeDomainFromCloudFrontDistribution
 } = require('./utils')
 
 class Domain extends Component {
@@ -141,6 +143,19 @@ class Domain extends Component {
           domainHostedZoneId,
           this // passing instance for helpful logs during the process
         )
+      } else if (subdomain.type === 'awsCloudFront') {
+        this.context.debug(
+          `Adding ${subdomain.domain} domain to CloudFront distribution with URL "${subdomain.url}"`
+        )
+        await addDomainToCloudfrontDistribution(clients.cf, subdomain, certificate.CertificateArn)
+
+        this.context.debug(`Configuring DNS for distribution "${subdomain.url}".`)
+        await configureDnsForCloudFrontDistribution(
+          clients.route53,
+          subdomain,
+          domainHostedZoneId,
+          subdomain.url.replace('https://', '')
+        )
       }
 
       // TODO: Remove unused domains that are kept in state
@@ -194,7 +209,7 @@ class Domain extends Component {
 
         if (distribution) {
           this.context.debug(`Removing DNS records for website domain ${domainState.domain}.`)
-          await removeWebsiteDomainDnsRecords(
+          await removeCloudFrontDomainDnsRecords(
             clients.route53,
             domainState.domain,
             domainHostedZoneId,
@@ -202,7 +217,7 @@ class Domain extends Component {
           )
 
           if (domainState.domain.startsWith('www')) {
-            await removeWebsiteDomainDnsRecords(
+            await removeCloudFrontDomainDnsRecords(
               clients.route53,
               domainState.domain.replace('www.', ''), // it'll move on if it doesn't exist
               domainHostedZoneId,
@@ -229,6 +244,17 @@ class Domain extends Component {
             domainRes.distributionDomainName
           )
         }
+      } else if (domainState.type === 'awsCloudFront') {
+        this.context.debug(`Removing domain ${domainState.domain} from CloudFront.`)
+        await removeDomainFromCloudFrontDistribution(clients.cf, domainState)
+
+        this.context.debug(`Removing CloudFront DNS records for domain ${domainState.domain}`)
+        await removeCloudFrontDomainDnsRecords(
+          clients.route53,
+          domainState.domain,
+          domainHostedZoneId,
+          domainState.url.replace('https://', '')
+        )
       }
     }
     this.state = {}
