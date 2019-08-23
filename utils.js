@@ -610,6 +610,8 @@ const updateCloudfrontDistribution = async (cf, subdomain, distributionId) => {
   params.Id = distributionId
 
   // 5. then make our changes
+
+  params.DistributionConfig.DefaultRootObject = 'index.html'
   // todo maybe we should add ALL error codes returned from CloudFront/S3?!
   params.DistributionConfig.CustomErrorResponses = {
     Quantity: 2,
@@ -628,23 +630,6 @@ const updateCloudfrontDistribution = async (cf, subdomain, distributionId) => {
       }
     ]
   }
-  params.DistributionConfig.Origins.Items = [
-    {
-      Id: `S3-${subdomain.s3BucketName}`,
-      DomainName: `${subdomain.s3BucketName}.s3.amazonaws.com`,
-      OriginPath: '',
-      CustomHeaders: {
-        Quantity: 0,
-        Items: []
-      },
-      S3OriginConfig: {
-        OriginAccessIdentity: ''
-      }
-    }
-  ]
-
-  params.DistributionConfig.DefaultCacheBehavior.TargetOriginId = `S3-${subdomain.s3BucketName}`
-
   // 6. then finally update!
   const res = await cf.updateDistribution(params).promise()
 
@@ -863,6 +848,31 @@ const removeDomainFromCloudFrontDistribution = async (cf, subdomain) => {
  * Exports
  */
 
+ const getClients
+ const prepareDomains
+ const getOutdatedDomains
+
+
+ const getDomainHostedZoneId
+ const describeCertificateByArn
+ const getCertificateArnByDomain
+ const createCertificate
+ const validateCertificate
+
+
+ const addDomainToDistribution
+ const invalidateCloudfrontDistribution // move to aws-cloudfront
+ const getCloudFrontDistributionByDomain // maybe we don't need it?
+ const addDnsRecordsForDistribution
+ const removeDomainFromDistribution
+ const removeDnsRecordsFromDistribution
+
+ const addDomainToApig
+ const mapDomainToApi
+ const createDomainInApig
+ const addDnsRecordsForApigDomain
+ const removeDnsRecordsForApigDomain
+ const removeDomainFromApig
 module.exports = {
   getClients,
   prepareSubdomains,
