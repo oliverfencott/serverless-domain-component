@@ -61,6 +61,15 @@ const prepareSubdomains = (inputs) => {
       domainObj.type = 'awsApiGateway'
     }
 
+    // Check if referenced Component is using AppSync...
+    if (inputs.subdomains[subdomain].url.includes('appsync')) {
+      domainObj.apiId = inputs.subdomains[subdomain].url.split('.')[0].split('//')[1]
+      domainObj.url = inputs.subdomains[subdomain].url
+        .replace('https://', '') // distribution origin does not expect https
+        .replace('/graphql', '') // distribution lrigin does not expect /graphql
+      domainObj.type = 'awsAppSync'
+    }
+
     if (inputs.subdomains[subdomain].url.includes('cloudfront')) {
       domainObj.distributionId = inputs.subdomains[subdomain].id
       domainObj.url = inputs.subdomains[subdomain].url
@@ -450,6 +459,100 @@ const configureDnsForCloudFrontDistribution = async (
   return route53.changeResourceRecordSets(dnsRecordParams).promise()
 }
 
+const createCloudfrontDistributionForAppSync = async (cf, subdomain, certificateArn) => {
+  const params = {
+    DistributionConfig: {
+      CallerReference: String(Date.now()),
+      Aliases: {
+        Quantity: 1,
+        Items: [subdomain.domain]
+      },
+      Origins: {
+        Quantity: 1,
+        Items: [
+          {
+            Id: `app-sync-${subdomain.apiId}`,
+            DomainName: subdomain.url,
+            CustomOriginConfig: {
+              HTTPPort: 80,
+              HTTPSPort: 443,
+              OriginKeepaliveTimeout: 5,
+              OriginProtocolPolicy: 'https-only',
+              OriginReadTimeout: 30,
+              OriginSslProtocols: {
+                Items: ['SSLv3', 'TLSv1', 'TLSv1.1', 'TLSv1.2'],
+                Quantity: 4
+              }
+            }
+          }
+        ]
+      },
+      OriginGroups: {
+        Quantity: 0,
+        Items: []
+      },
+      DefaultCacheBehavior: {
+        TargetOriginId: `app-sync-${subdomain.apiId}`,
+        ForwardedValues: {
+          QueryString: false,
+          Cookies: {
+            Forward: 'none'
+          }
+        },
+        TrustedSigners: {
+          Enabled: false,
+          Quantity: 0,
+          Items: []
+        },
+        ViewerProtocolPolicy: 'redirect-to-https',
+        MinTTL: 0,
+        AllowedMethods: {
+          Quantity: 7,
+          Items: ['HEAD', 'GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']
+        },
+        SmoothStreaming: false,
+        DefaultTTL: 86400,
+        MaxTTL: 31536000,
+        Compress: false,
+        LambdaFunctionAssociations: {
+          Quantity: 0,
+          Items: []
+        },
+        FieldLevelEncryptionId: ''
+      },
+      CacheBehaviors: {
+        Quantity: 0,
+        Items: []
+      },
+      CustomErrorResponses: {
+        Quantity: 0,
+        Items: []
+      },
+      Comment: `app-sync-${subdomain.apiId}`,
+      PriceClass: 'PriceClass_All',
+      Enabled: true,
+      ViewerCertificate: {
+        ACMCertificateArn: certificateArn,
+        SSLSupportMethod: 'sni-only',
+        MinimumProtocolVersion: 'TLSv1.1_2016',
+        Certificate: certificateArn,
+        CertificateSource: 'acm'
+      },
+      WebACLId: '',
+      HttpVersion: 'http2',
+      IsIPV6Enabled: true
+    }
+  }
+
+  const res = await cf.createDistribution(params).promise()
+
+  return {
+    id: res.Distribution.Id,
+    arn: res.Distribution.ARN,
+    url: res.Distribution.DomainName
+  }
+}
+
 /**
  * Create Cloudfront Distribution
  */
@@ -581,6 +684,58 @@ const createCloudfrontDistribution = async (cf, subdomain, certificateArn) => {
   }
 
   const res = await cf.createDistribution(params).promise()
+
+  return {
+    id: res.Distribution.Id,
+    arn: res.Distribution.ARN,
+    url: res.Distribution.DomainName
+  }
+}
+
+const updateCloudfrontDistributionForAppSync = async (cf, subdomain, distributionId) => {
+  // Update logic is a bit weird...
+  // https://docs.aws.amazon.com/AWSJavaScriptSDK/latest/AWS/CloudFront.html#updateDistribution-property
+
+  // 1. we gotta get the config first...
+  const params = await cf.getDistributionConfig({ Id: distributionId }).promise()
+
+  // 2. then add this property
+  params.IfMatch = params.ETag
+
+  // 3. then delete this property
+  delete params.ETag
+
+  // 4. then set this property
+  params.Id = distributionId
+
+  // 5. then make our changes
+  params.DistributionConfig.Origins.Items = [
+    {
+      Id: `app-sync-${subdomain.apiId}`,
+      DomainName: subdomain.url,
+      OriginPath: '',
+      CustomHeaders: {
+        Quantity: 0,
+        Items: []
+      },
+      CustomOriginConfig: {
+        HTTPPort: 80,
+        HTTPSPort: 443,
+        OriginKeepaliveTimeout: 5,
+        OriginProtocolPolicy: 'https-only',
+        OriginReadTimeout: 30,
+        OriginSslProtocols: {
+          Items: ['SSLv3', 'TLSv1', 'TLSv1.1', 'TLSv1.2'],
+          Quantity: 4
+        }
+      }
+    }
+  ]
+
+  params.DistributionConfig.DefaultCacheBehavior.TargetOriginId = `app-sync-${subdomain.apiId}`
+
+  // 6. then finally update!
+  const res = await cf.updateDistribution(params).promise()
 
   return {
     id: res.Distribution.Id,
@@ -886,5 +1041,7 @@ module.exports = {
   getApiDomainName,
   removeCloudFrontDomainDnsRecords,
   addDomainToCloudfrontDistribution,
-  removeDomainFromCloudFrontDistribution
+  removeDomainFromCloudFrontDistribution,
+  createCloudfrontDistributionForAppSync,
+  updateCloudfrontDistributionForAppSync
 }

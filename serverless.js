@@ -18,7 +18,9 @@ const {
   getApiDomainName,
   removeCloudFrontDomainDnsRecords,
   addDomainToCloudfrontDistribution,
-  removeDomainFromCloudFrontDistribution
+  removeDomainFromCloudFrontDistribution,
+  createCloudfrontDistributionForAppSync,
+  updateCloudfrontDistributionForAppSync
 } = require('./utils')
 
 class Domain extends Component {
@@ -156,6 +158,43 @@ class Domain extends Component {
           domainHostedZoneId,
           subdomain.url.replace('https://', '')
         )
+      } else if (subdomain.type === 'awsAppSync') {
+        this.context.debug(`Configuring domain "${subdomain.domain}" for AppSync API`)
+
+        this.context.debug(`Checking CloudFront distribution for domain "${subdomain.domain}"`)
+        let distribution = await getCloudFrontDistributionByDomain(clients.cf, subdomain.domain)
+        if (!distribution) {
+          this.context.debug(
+            `CloudFront distribution for domain "${subdomain.domain}" not found. Creating...`
+          )
+          distribution = await createCloudfrontDistributionForAppSync(
+            clients.cf,
+            subdomain,
+            certificate.CertificateArn
+          )
+        } else if (!distribution.origins.includes(subdomain.url)) {
+          this.context.debug(`Updating distribution "${distribution.url}".`)
+          distribution = await updateCloudfrontDistributionForAppSync(
+            clients.cf,
+            subdomain,
+            distribution.id
+          )
+        }
+
+        this.context.debug(`Configuring DNS for distribution "${distribution.url}".`)
+
+        await configureDnsForCloudFrontDistribution(
+          clients.route53,
+          subdomain,
+          domainHostedZoneId,
+          distribution.url
+        )
+
+        this.context.debug(`Invalidating CloudFront distribution ${distribution.url}`)
+
+        await invalidateCloudfrontDistribution(clients.cf, distribution.id)
+
+        this.context.debug(`Using AWS Cloudfront Distribution with URL: "${subdomain.domain}"`)
       }
 
       // TODO: Remove unused domains that are kept in state
@@ -255,6 +294,18 @@ class Domain extends Component {
           domainHostedZoneId,
           domainState.url.replace('https://', '')
         )
+      } else if (domainState.type === 'awsAppSync') {
+        const distribution = await getCloudFrontDistributionByDomain(clients.cf, domainState.domain)
+
+        if (distribution) {
+          this.context.debug(`Removing DNS records for AppSync domain ${domainState.domain}.`)
+          await removeCloudFrontDomainDnsRecords(
+            clients.route53,
+            domainState.domain,
+            domainHostedZoneId,
+            distribution.url
+          )
+        }
       }
     }
     this.state = {}
