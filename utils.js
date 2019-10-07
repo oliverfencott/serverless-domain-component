@@ -968,6 +968,11 @@ const addDomainToCloudfrontDistribution = async (cf, subdomain, certificateArn) 
     Items: [subdomain.domain]
   }
 
+  if (subdomain.domain.startsWith('www')) {
+    params.DistributionConfig.Aliases.Quantity = 2
+    params.DistributionConfig.Aliases.Items.push(`${subdomain.domain.replace('www.', '')}`)
+  }
+
   params.DistributionConfig.ViewerCertificate = {
     ACMCertificateArn: certificateArn,
     SSLSupportMethod: 'sni-only',
