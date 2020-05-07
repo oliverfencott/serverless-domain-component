@@ -20,7 +20,8 @@ const {
   addDomainToCloudfrontDistribution,
   removeDomainFromCloudFrontDistribution,
   createCloudfrontDistributionForAppSync,
-  updateCloudfrontDistributionForAppSync
+  updateCloudfrontDistributionForAppSync,
+  log
 } = require('./utils')
 
 class Domain extends Component {
@@ -28,11 +29,11 @@ class Domain extends Component {
    * Remove
    */
 
-  async default(inputs = {}) {
-    this.context.status('Deploying')
-    this.context.debug(`Starting Domain component deployment.`)
+  async deploy(inputs = {}) {
+    log('Deploying')
+    log(`Starting Domain component deployment.`)
 
-    this.context.debug(`Validating inputs.`)
+    log(`Validating inputs.`)
     inputs.region = inputs.region || 'us-east-1'
     inputs.privateZone = inputs.privateZone || false
 
@@ -44,9 +45,9 @@ class Domain extends Component {
     // On domain change, call remove for all previous state.
 
     // Get AWS SDK Clients
-    const clients = getClients(this.context.credentials.aws, inputs.region)
+    const clients = getClients(this.credentials.aws, inputs.region)
 
-    this.context.debug(`Formatting domains and identifying cloud services being used.`)
+    log(`Formatting domains and identifying cloud services being used.`)
     const subdomains = prepareSubdomains(inputs)
     this.state.region = inputs.region
     this.state.privateZone = JSON.parse(inputs.privateZone)
@@ -54,29 +55,27 @@ class Domain extends Component {
     this.state.subdomains = subdomains
     await this.save()
 
-    this.context.debug(`Getting the Hosted Zone ID for the domain ${inputs.domain}.`)
+    log(`Getting the Hosted Zone ID for the domain ${inputs.domain}.`)
     const domainHostedZoneId = await getDomainHostedZoneId(
       clients.route53,
       inputs.domain,
       inputs.privateZone
     )
 
-    this.context.debug(
-      `Searching for an AWS ACM Certificate based on the domain: ${inputs.domain}.`
-    )
+    log(`Searching for an AWS ACM Certificate based on the domain: ${inputs.domain}.`)
     let certificateArn = await getCertificateArnByDomain(clients.acm, inputs.domain)
     if (!certificateArn) {
-      this.context.debug(`No existing AWS ACM Certificates found for the domain: ${inputs.domain}.`)
-      this.context.debug(`Creating a new AWS ACM Certificate for the domain: ${inputs.domain}.`)
+      log(`No existing AWS ACM Certificates found for the domain: ${inputs.domain}.`)
+      log(`Creating a new AWS ACM Certificate for the domain: ${inputs.domain}.`)
       certificateArn = await createCertificate(clients.acm, inputs.domain)
     }
 
-    this.context.debug(`Checking the status of AWS ACM Certificate.`)
+    log(`Checking the status of AWS ACM Certificate.`)
     const certificate = await describeCertificateByArn(clients.acm, certificateArn)
 
     if (certificate.Status === 'PENDING_VALIDATION') {
-      this.context.debug(`AWS ACM Certificate Validation Status is "PENDING_VALIDATION".`)
-      this.context.debug(`Validating AWS ACM Certificate via Route53 "DNS" method.`)
+      log(`AWS ACM Certificate Validation Status is "PENDING_VALIDATION".`)
+      log(`Validating AWS ACM Certificate via Route53 "DNS" method.`)
       await validateCertificate(
         clients.acm,
         clients.route53,
@@ -84,7 +83,7 @@ class Domain extends Component {
         inputs.domain,
         domainHostedZoneId
       )
-      this.context.log(
+      log(
         'Your AWS ACM Certificate has been created and is being validated via DNS.  This could take up to 30 minutes since it depends on DNS propagation.  Continuining deployment, but you may have to wait for DNS propagation.'
       )
     }
@@ -99,14 +98,12 @@ class Domain extends Component {
     // Setting up domains for different services
     for (const subdomain of subdomains) {
       if (subdomain.type === 'awsS3Website') {
-        this.context.debug(`Configuring domain "${subdomain.domain}" for S3 Bucket Website`)
+        log(`Configuring domain "${subdomain.domain}" for S3 Bucket Website`)
 
-        this.context.debug(`Checking CloudFront distribution for domain "${subdomain.domain}"`)
+        log(`Checking CloudFront distribution for domain "${subdomain.domain}"`)
         let distribution = await getCloudFrontDistributionByDomain(clients.cf, subdomain.domain)
         if (!distribution) {
-          this.context.debug(
-            `CloudFront distribution for domain "${subdomain.domain}" not found. Creating...`
-          )
+          log(`CloudFront distribution for domain "${subdomain.domain}" not found. Creating...`)
           distribution = await createCloudfrontDistribution(
             clients.cf,
             subdomain,
@@ -116,11 +113,11 @@ class Domain extends Component {
           !distribution.origins.includes(`${subdomain.s3BucketName}.s3.amazonaws.com`) ||
           !distribution.errorPages
         ) {
-          this.context.debug(`Updating distribution "${distribution.url}".`)
+          log(`Updating distribution "${distribution.url}".`)
           distribution = await updateCloudfrontDistribution(clients.cf, subdomain, distribution.id)
         }
 
-        this.context.debug(`Configuring DNS for distribution "${distribution.url}".`)
+        log(`Configuring DNS for distribution "${distribution.url}".`)
 
         await configureDnsForCloudFrontDistribution(
           clients.route53,
@@ -129,11 +126,11 @@ class Domain extends Component {
           distribution.url
         )
 
-        this.context.debug(`Invalidating CloudFront distribution ${distribution.url}`)
+        log(`Invalidating CloudFront distribution ${distribution.url}`)
 
         await invalidateCloudfrontDistribution(clients.cf, distribution.id)
 
-        this.context.debug(`Using AWS Cloudfront Distribution with URL: "${subdomain.domain}"`)
+        log(`Using AWS Cloudfront Distribution with URL: "${subdomain.domain}"`)
       } else if (subdomain.type === 'awsApiGateway') {
         // Map APIG domain to API ID and recursively retry
         // if APIG domain need to be created first, or TooManyRequests error is thrown
@@ -143,15 +140,15 @@ class Domain extends Component {
           subdomain,
           certificate.CertificateArn,
           domainHostedZoneId,
-          this // passing instance for helpful logs during the process
+          this.stage
         )
       } else if (subdomain.type === 'awsCloudFront') {
-        this.context.debug(
+        log(
           `Adding ${subdomain.domain} domain to CloudFront distribution with URL "${subdomain.url}"`
         )
         await addDomainToCloudfrontDistribution(clients.cf, subdomain, certificate.CertificateArn)
 
-        this.context.debug(`Configuring DNS for distribution "${subdomain.url}".`)
+        log(`Configuring DNS for distribution "${subdomain.url}".`)
         await configureDnsForCloudFrontDistribution(
           clients.route53,
           subdomain,
@@ -159,21 +156,19 @@ class Domain extends Component {
           subdomain.url.replace('https://', '')
         )
       } else if (subdomain.type === 'awsAppSync') {
-        this.context.debug(`Configuring domain "${subdomain.domain}" for AppSync API`)
+        log(`Configuring domain "${subdomain.domain}" for AppSync API`)
 
-        this.context.debug(`Checking CloudFront distribution for domain "${subdomain.domain}"`)
+        log(`Checking CloudFront distribution for domain "${subdomain.domain}"`)
         let distribution = await getCloudFrontDistributionByDomain(clients.cf, subdomain.domain)
         if (!distribution) {
-          this.context.debug(
-            `CloudFront distribution for domain "${subdomain.domain}" not found. Creating...`
-          )
+          log(`CloudFront distribution for domain "${subdomain.domain}" not found. Creating...`)
           distribution = await createCloudfrontDistributionForAppSync(
             clients.cf,
             subdomain,
             certificate.CertificateArn
           )
         } else if (!distribution.origins.includes(subdomain.url)) {
-          this.context.debug(`Updating distribution "${distribution.url}".`)
+          log(`Updating distribution "${distribution.url}".`)
           distribution = await updateCloudfrontDistributionForAppSync(
             clients.cf,
             subdomain,
@@ -181,7 +176,7 @@ class Domain extends Component {
           )
         }
 
-        this.context.debug(`Configuring DNS for distribution "${distribution.url}".`)
+        log(`Configuring DNS for distribution "${distribution.url}".`)
 
         await configureDnsForCloudFrontDistribution(
           clients.route53,
@@ -190,11 +185,11 @@ class Domain extends Component {
           distribution.url
         )
 
-        this.context.debug(`Invalidating CloudFront distribution ${distribution.url}`)
+        log(`Invalidating CloudFront distribution ${distribution.url}`)
 
         await invalidateCloudfrontDistribution(clients.cf, distribution.id)
 
-        this.context.debug(`Using AWS Cloudfront Distribution with URL: "${subdomain.domain}"`)
+        log(`Using AWS Cloudfront Distribution with URL: "${subdomain.domain}"`)
       }
 
       // TODO: Remove unused domains that are kept in state
@@ -220,18 +215,18 @@ class Domain extends Component {
    */
 
   async remove() {
-    this.context.status('Deploying')
+    log('Deploying')
 
     if (!this.state.domain) {
       return
     }
 
-    this.context.debug(`Starting Domain component removal.`)
+    log(`Starting Domain component removal.`)
 
     // Get AWS SDK Clients
-    const clients = getClients(this.context.credentials.aws, this.state.region)
+    const clients = getClients(this.credentials.aws, this.state.region)
 
-    this.context.debug(`Getting the Hosted Zone ID for the domain ${this.state.domain}.`)
+    log(`Getting the Hosted Zone ID for the domain ${this.state.domain}.`)
     const domainHostedZoneId = await getDomainHostedZoneId(
       clients.route53,
       this.state.domain,
@@ -241,13 +236,11 @@ class Domain extends Component {
     for (const subdomain in this.state.subdomains) {
       const domainState = this.state.subdomains[subdomain]
       if (domainState.type === 'awsS3Website') {
-        this.context.debug(
-          `Fetching CloudFront distribution info for removal for domain ${domainState.domain}.`
-        )
+        log(`Fetching CloudFront distribution info for removal for domain ${domainState.domain}.`)
         const distribution = await getCloudFrontDistributionByDomain(clients.cf, domainState.domain)
 
         if (distribution) {
-          this.context.debug(`Removing DNS records for website domain ${domainState.domain}.`)
+          log(`Removing DNS records for website domain ${domainState.domain}.`)
           await removeCloudFrontDomainDnsRecords(
             clients.route53,
             domainState.domain,
@@ -265,16 +258,14 @@ class Domain extends Component {
           }
         }
       } else if (domainState.type === 'awsApiGateway') {
-        this.context.debug(
-          `Fetching API Gateway domain ${domainState.domain} information for removal.`
-        )
+        log(`Fetching API Gateway domain ${domainState.domain} information for removal.`)
         const domainRes = await getApiDomainName(clients.apig, domainState.domain)
 
         if (domainRes) {
-          this.context.debug(`Removing API Gateway domain ${domainState.domain}.`)
+          log(`Removing API Gateway domain ${domainState.domain}.`)
           await removeApiDomain(clients.apig, domainState.domain)
 
-          this.context.debug(`Removing DNS records for API Gateway domain ${domainState.domain}.`)
+          log(`Removing DNS records for API Gateway domain ${domainState.domain}.`)
           await removeApiDomainDnsRecords(
             clients.route53,
             domainState.domain,
@@ -284,10 +275,10 @@ class Domain extends Component {
           )
         }
       } else if (domainState.type === 'awsCloudFront') {
-        this.context.debug(`Removing domain ${domainState.domain} from CloudFront.`)
+        log(`Removing domain ${domainState.domain} from CloudFront.`)
         await removeDomainFromCloudFrontDistribution(clients.cf, domainState)
 
-        this.context.debug(`Removing CloudFront DNS records for domain ${domainState.domain}`)
+        log(`Removing CloudFront DNS records for domain ${domainState.domain}`)
         await removeCloudFrontDomainDnsRecords(
           clients.route53,
           domainState.domain,
@@ -298,7 +289,7 @@ class Domain extends Component {
         const distribution = await getCloudFrontDistributionByDomain(clients.cf, domainState.domain)
 
         if (distribution) {
-          this.context.debug(`Removing DNS records for AppSync domain ${domainState.domain}.`)
+          log(`Removing DNS records for AppSync domain ${domainState.domain}.`)
           await removeCloudFrontDomainDnsRecords(
             clients.route53,
             domainState.domain,

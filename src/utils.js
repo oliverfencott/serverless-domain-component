@@ -1,6 +1,8 @@
 const aws = require('aws-sdk')
 const { utils } = require('@serverless/core')
 
+const log = (arg) => (console.log(arg), arg)
+
 /**
  * Get Clients
  * - Gets AWS SDK clients to use within this Component
@@ -328,20 +330,20 @@ const configureDnsForApigDomain = async (
 /**
  * Map API Gateway API to the created API Gateway Domain
  */
-const mapDomainToApi = async (apig, domain, apiId) => {
+const mapDomainToApi = async (apig, domain, apiId, stage) => {
   try {
     const params = {
       domainName: domain,
       restApiId: apiId,
       basePath: '(none)',
-      stage: 'production'
+      stage
     }
     // todo what if it already exists but for a different apiId
     return apig.createBasePathMapping(params).promise()
   } catch (e) {
     if (e.code === 'TooManyRequestsException') {
       await utils.sleep(2000)
-      return mapDomainToApi(apig, domain, apiId)
+      return mapDomainToApi(apig, domain, apiId, stage)
     }
     throw e
   }
@@ -353,18 +355,18 @@ const deployApiDomain = async (
   subdomain,
   certificateArn,
   domainHostedZoneId,
-  that
+  stage
 ) => {
   try {
-    that.context.debug(`Mapping domain ${subdomain.domain} to API ID ${subdomain.apiId}`)
-    await mapDomainToApi(apig, subdomain.domain, subdomain.apiId)
+    log(`Mapping domain ${subdomain.domain} to API ID ${subdomain.apiId}`)
+    await mapDomainToApi(apig, subdomain.domain, subdomain.apiId, stage)
   } catch (e) {
     if (e.message === 'Invalid domain name identifier specified') {
-      that.context.debug(`Domain ${subdomain.domain} not found in API Gateway. Creating...`)
+      log(`Domain ${subdomain.domain} not found in API Gateway. Creating...`)
 
       const res = await createDomainInApig(apig, subdomain.domain, certificateArn)
 
-      that.context.debug(`Configuring DNS for API Gateway domain ${subdomain.domain}.`)
+      log(`Configuring DNS for API Gateway domain ${subdomain.domain}.`)
 
       await configureDnsForApigDomain(
         route53,
@@ -375,13 +377,11 @@ const deployApiDomain = async (
       )
 
       // retry domain deployment now that domain is created
-      return deployApiDomain(apig, route53, subdomain, certificateArn, domainHostedZoneId, that)
+      return deployApiDomain(apig, route53, subdomain, certificateArn, domainHostedZoneId, stage)
     }
 
     if (e.message === 'Base path already exists for this domain name') {
-      that.context.debug(
-        `Domain ${subdomain.domain} is already mapped to API ID ${subdomain.apiId}.`
-      )
+      log(`Domain ${subdomain.domain} is already mapped to API ID ${subdomain.apiId}.`)
       return
     }
     throw new Error(e)
@@ -1048,5 +1048,6 @@ module.exports = {
   addDomainToCloudfrontDistribution,
   removeDomainFromCloudFrontDistribution,
   createCloudfrontDistributionForAppSync,
-  updateCloudfrontDistributionForAppSync
+  updateCloudfrontDistributionForAppSync,
+  log
 }

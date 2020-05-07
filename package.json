@@ -6,6 +6,8 @@
     "access": "public"
   },
   "scripts": {
+    "dev": "serverless registry publish --dev",
+    "push": "serverless registry publish",
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint . --fix --cache"
   },
